@@ -1,0 +1,225 @@
+body {
+    margin: 0;
+    padding: 20px;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: url(assets/BG2.jpg) no-repeat center center;
+    background-size: cover;
+    text-align: center;
+    background-color: black;
+    box-sizing: border-box;
+}
+
+@font-face {
+    font-family: MKWorld;
+    src: url(assets/font/RacersDelight.otf);
+}
+
+h1 {
+    color: white;
+    font-family: MKWorld;
+    font-size: 50px;
+    font-weight: normal;
+}
+
+h2, h3, label {
+    color: white;
+    font-family: MKWorld;
+    font-weight: normal;
+}
+
+h4 {
+    color: white;
+    font-family: MKWorld;
+    font-weight: normal;
+    margin-top: -1px;
+}
+
+footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    text-align: left;
+    padding: 10px;
+    margin-bottom: -20px;
+    color: white;
+    opacity: 20%;
+    font-family: MKWorld;
+    font-weight: normal;
+  }  
+
+#metadata {
+    margin-top: 20px; 
+}
+
+img.artwork {
+    background-size: cover;
+}
+
+.musicplayer img {
+    width: 275px;
+    height: 250px;
+    object-fit: cover;
+    border-radius: 15%;
+  }
+
+  article.musicplayer {
+    position: relative; /* al aanwezig */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    max-width: 25em;
+    min-width: 10em;
+    border-radius: 2rem;
+    background: rgb(41, 41, 41);
+    text-align: center;
+    padding: 2rem;
+    width: 300px;
+}
+
+img {
+    border-radius: 15%;
+}
+  
+.volume-control-horizontal {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  
+  .volume-control-horizontal input[type="range"] {
+    width: 200px;
+    height: 6px;
+    background: #ccc;
+    border-radius: 3px;
+    cursor: pointer;
+  }
+  
+  /* Webkit/Chrome */
+  .volume-control-horizontal input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px;
+    height: 16px;
+    background: #555;
+    border-radius: 50%;
+    cursor: pointer;
+    margin-top: 0px;
+  }
+  
+  /* Firefox */
+  .volume-control-horizontal input[type="range"]::-moz-range-thumb {
+    width: 16px;
+    height: 16px;
+    background: #555;
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+  }
+
+/* Pijltje standaard */
+.dropdown-toggle {
+    position: absolute;
+    top: 50%;
+    right: -25px;
+    transform: translateY(-50%) rotate(0deg); /* beginstand */
+    background-color: #555;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    width: 30px;
+    height: 30px;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 28px;
+    text-align: center;
+    z-index: 20;
+    transition: transform 0.3s ease; /* animatie bij draaien */
+}
+
+/* Pijltje wanneer menu open is */
+.dropdown-toggle.open {
+    transform: translateY(-50%) rotate(180deg); /* pijltje naar rechts -> omlaag */
+}
+
+
+.dropdown {
+    position: fixed;
+    top: 50%;
+    left: 50%; /* begin in het midden */
+    transform: translateY(-50%);
+    display: none;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+    background-color: #292929;
+    padding: 10px;
+    border-radius: 10px;
+    box-shadow: 0px 8px 16px rgba(0,0,0,0.2);
+    width: 250px;
+    max-height: 80vh;
+    overflow-y: auto;
+    z-index: 999;
+}
+
+/* Pas horizontale positie met media queries op mobiel */
+@media screen and (max-width: 500px) {
+    .dropdown {
+        left: auto;       /* niet meer fixed links van center */
+        right: 10px;      /* altijd 10px van rechterkant viewport */
+        transform: translateY(-50%);
+        width: 90%;       /* smaller zodat hij binnen scherm past */
+    }
+}
+
+
+/* Switch styling */
+.switch {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    font-family: MKWorld;
+    color: white;
+    cursor: pointer;
+    line-height: 200%;
+}
+
+.switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.slider {
+    position: relative;
+    width: 40px;
+    height: 18px;
+    background-color: #ccc;
+    border-radius: 34px;
+    transition: 0.4s;
+}
+
+.slider::before {
+    position: absolute;
+    content: "";
+    height: 14px;
+    width: 14px;
+    left: 2px;
+    bottom: 2px;
+    background-color: white;
+    border-radius: 50%;
+    transition: 0.4s;
+}
+
+.switch input:checked + .slider {
+    background-color: #2196F3;
+}
+
+.switch input:checked + .slider::before {
+    transform: translateX(22px);
+}

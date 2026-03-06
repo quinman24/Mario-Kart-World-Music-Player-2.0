@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1, minimum-scale=1, viewport-fit=cover">
+<title>Mario Kart World Radio</title>
+<link rel="icon" type="image/x-icon" href="assets/icon.png">
+<link rel="manifest" href="manifest.json">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="MKWR">
+<link rel="apple-touch-icon" sizes="180x180" href="assets/apple-touch-icon-180x180.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="application-name" content="Mario Kart World Radio">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/all.min.css"/>
+<meta content="Mario Kart World Radio" property="og:title" />
+<meta content="Online radio that plays Mario Kart World music in a shuffled order" property="og:description" />
+<meta content="https://tzgaming.github.io/mkw-music-player/" property="og:url" />
+<meta content="https://tzgaming.github.io/mkw-music-player/assets/MKWR-embed.png" property="og:image">
+<meta content="#ff0000" data-react-helmet="true" name="theme-color" />
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<img src="assets/MKWR.png" width="350" alt="Logo" title="Logo made by cCrappy Productions">
+<br><br>
+
+<!-- Toast notification -->
+<div id="toast" class="toast"></div>
+
+<!-- Playlist Name Modal -->
+<div id="playlistModal" class="modal-overlay" style="display:none">
+  <div class="modal-box">
+    <h2 id="modalTitle">New Playlist</h2>
+    <input type="text" id="playlistNameInput" class="modal-input" placeholder="Playlist name..." maxlength="40">
+    <div class="modal-btns">
+      <button id="modalConfirmBtn" class="modal-btn confirm">Create</button>
+      <button onclick="closePlaylistModal()" class="modal-btn cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="musicplayer-wrapper">
+
+    <div class="tracklist-container" id="tracklist">
+
+        <!-- Tabs -->
+        <div class="tracklist-tabs">
+            <button class="tab-btn active" id="tabAll" onclick="switchTab('all')">Track List</button>
+            <button class="tab-btn" id="tabFavorites" onclick="switchTab('favorites')"><i class="fa-solid fa-heart"></i> Favorites</button>
+            <button class="tab-btn" id="tabPlaylists" onclick="switchTab('playlists')"><i class="fa-solid fa-list"></i> Playlists</button>
+        </div>
+
+        <!-- Search bar -->
+        <div class="search-bar-wrapper" id="searchWrapper">
+            <input type="text" id="searchBar" class="search-bar" placeholder="Search tracks..." oninput="filterTracks(this.value)">
+        </div>
+
+        <!-- All tracks tab -->
+        <div id="tabContentAll" class="tab-content active"></div>
+
+        <!-- Favorites tab -->
+        <div id="tabContentFavorites" class="tab-content" style="display:none">
+            <div id="favoritesEmpty" class="empty-state">
+                <i class="fa-solid fa-heart-crack"></i>
+                <p>No favorites yet!<br>Click the ♥ on any track.</p>
+            </div>
+            <ul id="favoriteslist" class="cd-tracks open" style="display:none"></ul>
+        </div>
+
+        <!-- Playlists tab -->
+        <div id="tabContentPlaylists" class="tab-content" style="display:none">
+            <div class="playlist-header">
+                <button onclick="openPlaylistModal()" class="new-playlist-btn"><i class="fa-solid fa-plus"></i> New Playlist</button>
+            </div>
+            <div id="playlistsEmpty" class="empty-state">
+                <i class="fa-solid fa-compact-disc"></i>
+                <p>No playlists yet!<br>Create one above.</p>
+            </div>
+            <div id="playlistManagerList"></div>
+
+            <!-- Tracks inside selected playlist -->
+            <div id="playlistTrackView" style="display:none">
+                <div class="playlist-track-header">
+                    <button onclick="closePlaylistView()" class="back-btn"><i class="fa-solid fa-arrow-left"></i> Back</button>
+                    <span id="playlistViewName"></span>
+                </div>
+                <input type="text" id="playlistTrackSearch" class="search-bar" style="margin:8px 0" placeholder="Search to add track..." oninput="filterAddTrack(this.value)">
+                <div id="addTrackResults" class="add-track-results"></div>
+                <ul id="playlistTrackList" class="cd-tracks open"></ul>
+            </div>
+        </div>
+
+    </div>
+
+    <article class="musicplayer">
+
+        <div class="artwork-wrapper">
+            <img id="artwork" src="assets/player-img/cover.png" alt="cover" width="250" height="250">
+        </div>
+
+        <div class="metadata-box">
+            <div id="metadata">
+                <h1><span id="title">-</span></h1>
+                <h3 id="game" class="hidden">-</h3>
+
+                <div class="audio-player">
+                    <audio id="audioPlayer"></audio>
+                    <span id="timeDisplay">0:00 / 0:00</span>
+
+                    <div class="progress-wrapper">
+                        <div class="progress-container">
+                            <div class="progress-bar" id="progressBar"></div>
+                        </div>
+                    </div>
+
+                    <div class="controls">
+                      <button id="prevBtn" title="Previous (←)"><i class="fa-solid fa-backward"></i></button>
+                      <button id="playBtn" title="Play/Pause (Space)"><i class="fa-solid fa-play"></i></button>
+                      <button id="nextBtn" title="Next (→)"><i class="fa-solid fa-forward"></i></button>
+                    </div>
+
+                    <!-- Extra controls -->
+                    <div class="extra-controls">
+                        <button id="loopBtn" class="extra-btn loop-off" title="Loop (L)" onclick="cycleLoop()">
+                            <i class="fa-solid fa-repeat"></i>
+                        </button>
+                        <button id="favoriteBtn" class="extra-btn" title="Favorite (F)" onclick="toggleFavoriteCurrentTrack()">
+                            <i class="fa-regular fa-heart"></i>
+                        </button>
+                        <button id="downloadBtn" class="extra-btn" title="Download current track" onclick="openDownloadPicker()">
+                            <i class="fa-solid fa-download"></i>
+                        </button>
+                        <button id="addToPlaylistBtn" class="extra-btn" title="Add to playlist" onclick="openAddToPlaylistPicker()">
+                            <i class="fa-solid fa-list-ul"></i>
+                        </button>
+                    </div>
+
+                    <!-- Download format picker popup -->
+                    <div id="downloadFormatPicker" class="playlist-picker download-picker" style="display:none">
+                        <div class="playlist-picker-header"><i class="fa-solid fa-download"></i> Download As</div>
+                        <div id="downloadPickerOptions">
+                            <button class="picker-pl-btn" onclick="downloadAs('m4a')">
+                                <i class="fa-solid fa-music"></i> .m4a <span class="fmt-note">original · instant</span>
+                            </button>
+                            <button class="picker-pl-btn" onclick="downloadAs('mp3')">
+                                <i class="fa-solid fa-music"></i> .mp3 <span class="fmt-note">encodes in browser (~30s)</span>
+                            </button>
+                            <button class="picker-pl-btn" onclick="downloadAs('video')">
+                                <i class="fa-solid fa-video"></i> .webm video <span class="fmt-note">album art + audio, real-time</span>
+                            </button>
+                        </div>
+                        <div id="downloadProgress" class="dl-progress-wrap" style="display:none">
+                            <div class="dl-progress-label" id="downloadProgressLabel">Processing...</div>
+                            <div class="dl-progress-track">
+                                <div class="dl-progress-fill" id="downloadProgressFill" style="width:0%"></div>
+                            </div>
+                        </div>
+                        <button id="downloadCancelBtn" onclick="closeDownloadPicker()" class="playlist-picker-close">Cancel</button>
+                    </div>
+
+                    <!-- Add-to-playlist picker popup -->
+                    <div id="addToPlaylistPicker" class="playlist-picker" style="display:none">
+                        <div class="playlist-picker-header">Add to Playlist</div>
+                        <div id="playlistPickerList"></div>
+                        <button onclick="closeAddToPlaylistPicker()" class="playlist-picker-close">Close</button>
+                    </div>
+                </div>
+
+                <br>
+                <div class="volume-control-horizontal">
+                    <label for="volumeSlider"><i class="fa-solid fa-volume-high"></i></label>
+                    <input type="range" id="volumeSlider" min="0" max="100" value="100">
+                    <button id="muteBtn" class="mute-btn" title="Mute (M)" onclick="toggleMute()">
+                        <i class="fa-solid fa-volume-xmark"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings gear -->
+        <div class="circle">
+            <button class="dropdown-toggle" onclick="toggleDropdown()">
+              <i class="fa-solid fa-gear"></i>
+            </button>
+        </div>
+
+        <div class="dropdown">
+            <div class="dropdown-content" id="dropdownContent">
+                <label class="switch">
+                    <input type="checkbox" id="excludeCD1">
+                    <span class="slider"></span>
+                    Exclude CD1 - Grand Prix / Battle Tracks
+                </label>
+                <label class="switch">
+                    <input type="checkbox" id="excludeCD2">
+                    <span class="slider"></span>
+                    Exclude CD2 - Mario Kart Series Free Roam
+                </label>
+                <label class="switch">
+                    <input type="checkbox" id="excludeCD3">
+                    <span class="slider"></span>
+                    Exclude CD3 - Super Mario Series Free Roam
+                </label>
+                <label class="switch">
+                    <input type="checkbox" id="excludeCD4">
+                    <span class="slider"></span>
+                    Exclude CD4 - Miscellaneous Songs
+                </label>
+                <label class="switch">
+                    <input type="checkbox" id="playInOrder">
+                    <span class="slider"></span>
+                    Play tracks in order
+                </label>
+                <hr style="border-color:#555;margin:4px 0">
+                <div class="shortcut-hint">
+                    <b>Keyboard Shortcuts</b><br>
+                    Space = Play/Pause &nbsp;|&nbsp; ← → = Prev/Next<br>
+                    L = Loop &nbsp;|&nbsp; M = Mute &nbsp;|&nbsp; F = Favorite
+                </div>
+            </div>
+        </div>
+
+    </article>
+</div>
+
+<footer>
+    <h4>Music by ©Nintendo</h4>
+</footer>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/lamejs/1.2.1/lame.min.js"></script>
+<script src="player.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/service-worker.js')
+      .then(r => console.log('SW registered:', r))
+      .catch(e => console.log('SW failed:', e));
+  });
+}
+</script>
+</body>
+</html>
