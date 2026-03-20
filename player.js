@@ -440,12 +440,14 @@ function playTrack(index, fromHistory = false) {
             album: 'Mario Kart World Radio',
             artwork: [{ src: track.artwork || 'assets/player-img/cover.png', sizes: '512x512', type: 'image/png' }]
         });
-        navigator.mediaSession.setActionHandler('play', () => audioPlayer.play());
-        navigator.mediaSession.setActionHandler('pause', () => audioPlayer.pause());
-        navigator.mediaSession.setActionHandler('previoustrack', playPreviousTrack);
-        navigator.mediaSession.setActionHandler('nexttrack', playNextTrack);
-        navigator.mediaSession.setActionHandler('seekto', d => { if (audioPlayer.duration && d.seekTime >= 0 && d.seekTime <= audioPlayer.duration) audioPlayer.currentTime = d.seekTime; });
-        try { navigator.mediaSession.setPositionState({ duration: audioPlayer.duration || 0, playbackRate: 1, position: 0 }); } catch(e) {}
+        // Reset position state on new track; action handlers are registered once at init
+        audioPlayer.addEventListener('loadedmetadata', () => {
+            try {
+                if ('mediaSession' in navigator && navigator.mediaSession.setPositionState) {
+                    navigator.mediaSession.setPositionState({ duration: audioPlayer.duration || 0, playbackRate: 1, position: 0 });
+                }
+            } catch(e) {}
+        }, { once: true });
     }
     updateActiveTrack();
     updateFavoriteBtn();
@@ -489,6 +491,139 @@ audioPlayer.addEventListener('ended', () => {
     if (loopMode === 'one') { audioPlayer.currentTime = 0; audioPlayer.play(); } else playNextTrack();
 });
 
+// ---------- BACKGROUND PLAYBACK ROBUSTNESS ----------
+
+// 1. Stall / buffer wait recovery — Android throttles network when screen off
+let stallTimer = null;
+function clearStallTimer() { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
+
+audioPlayer.addEventListener('waiting', () => {
+    clearStallTimer();
+    stallTimer = setTimeout(() => {
+        // After 8s of buffering stall, try to seek slightly forward and resume
+        if (!audioPlayer.paused && audioPlayer.readyState < 3) {
+            console.warn('[MKWR] Audio stalled, attempting recovery...');
+            const ct = audioPlayer.currentTime;
+            audioPlayer.currentTime = ct + 0.1;
+            audioPlayer.play().catch(e => console.warn('[MKWR] Stall recovery play failed:', e));
+        }
+    }, 8000);
+});
+
+audioPlayer.addEventListener('stalled', () => {
+    clearStallTimer();
+    stallTimer = setTimeout(() => {
+        if (!audioPlayer.paused) {
+            console.warn('[MKWR] Audio stalled (stalled event), attempting recovery...');
+            const ct = audioPlayer.currentTime;
+            audioPlayer.load();
+            audioPlayer.currentTime = ct;
+            audioPlayer.play().catch(e => console.warn('[MKWR] Stall load recovery failed:', e));
+        }
+    }, 10000);
+});
+
+audioPlayer.addEventListener('playing', clearStallTimer);
+audioPlayer.addEventListener('ended', clearStallTimer);
+
+// 2. Error handler — skip to next track on unrecoverable audio error
+audioPlayer.addEventListener('error', (e) => {
+    const err = audioPlayer.error;
+    console.warn('[MKWR] Audio error:', err ? err.code + ' ' + err.message : e);
+    clearStallTimer();
+    // Don't skip if no track loaded yet
+    if (!audioPlayer.src || !tracks.length) return;
+    setTimeout(() => playNextTrack(), 1500);
+});
+
+// 3. Heartbeat — catches missed 'ended' events when screen is off (Android throttles JS)
+let lastHeartbeatTime = -1;
+let heartbeatSkipGuard = false;
+setInterval(() => {
+    if (audioPlayer.paused || !audioPlayer.duration || audioPlayer.duration === Infinity) return;
+    const remaining = audioPlayer.duration - audioPlayer.currentTime;
+    // Track has ended but ended event didn't fire
+    if (audioPlayer.ended && !heartbeatSkipGuard) {
+        heartbeatSkipGuard = true;
+        console.warn('[MKWR] Heartbeat caught missed ended event');
+        if (loopMode === 'one') { audioPlayer.currentTime = 0; audioPlayer.play(); }
+        else playNextTrack();
+        setTimeout(() => { heartbeatSkipGuard = false; }, 3000);
+        return;
+    }
+    // currentTime frozen — audio silently stalled
+    if (audioPlayer.currentTime === lastHeartbeatTime && audioPlayer.readyState < 3 && remaining > 2) {
+        console.warn('[MKWR] Heartbeat: currentTime frozen, attempting recovery');
+        audioPlayer.play().catch(e => {});
+    }
+    lastHeartbeatTime = audioPlayer.currentTime;
+    heartbeatSkipGuard = false;
+}, 3000);
+
+// 4. Visibility change — recover when user unlocks screen
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    console.log('[MKWR] Page visible again, checking audio state...');
+
+    // Short delay to let the browser fully resume from background
+    setTimeout(() => {
+        if (!tracks.length || currentTrack == null) return;
+
+        // Case A: audio ended while screen was off
+        if (audioPlayer.ended) {
+            console.log('[MKWR] Audio ended while in background, playing next');
+            if (loopMode === 'one') { audioPlayer.currentTime = 0; audioPlayer.play(); }
+            else playNextTrack();
+            return;
+        }
+
+        // Case B: audio should be playing but is paused (Android killed it)
+        if (audioPlayer.paused && audioPlayer.currentTime > 0 && audioPlayer.currentTime < audioPlayer.duration) {
+            console.log('[MKWR] Audio was playing but paused by system, resuming');
+            audioPlayer.play().catch(e => console.warn('[MKWR] Resume failed:', e));
+            return;
+        }
+
+        // Case C: audio stalled / low readyState while should be playing
+        if (!audioPlayer.paused && audioPlayer.readyState < 2) {
+            console.log('[MKWR] Audio stalled in background, reloading');
+            const ct = audioPlayer.currentTime;
+            audioPlayer.load();
+            if (ct > 0) { try { audioPlayer.currentTime = ct; } catch(e) {} }
+            audioPlayer.play().catch(e => console.warn('[MKWR] Stall resume failed:', e));
+        }
+    }, 500);
+});
+
+// 5. MediaSession — register action handlers ONCE at init (not per-track)
+if ('mediaSession' in navigator) {
+    navigator.mediaSession.setActionHandler('play', () => {
+        audioPlayer.play().catch(e => console.warn('[MKWR] MediaSession play failed:', e));
+    });
+    navigator.mediaSession.setActionHandler('pause', () => audioPlayer.pause());
+    navigator.mediaSession.setActionHandler('previoustrack', playPreviousTrack);
+    navigator.mediaSession.setActionHandler('nexttrack', playNextTrack);
+    navigator.mediaSession.setActionHandler('seekto', (d) => {
+        if (d.seekTime >= 0 && audioPlayer.duration && d.seekTime <= audioPlayer.duration) {
+            audioPlayer.currentTime = d.seekTime;
+        }
+    });
+    navigator.mediaSession.setActionHandler('seekbackward', (d) => {
+        audioPlayer.currentTime = Math.max(0, audioPlayer.currentTime - (d.seekOffset || 10));
+    });
+    navigator.mediaSession.setActionHandler('seekforward', (d) => {
+        audioPlayer.currentTime = Math.min(audioPlayer.duration || 0, audioPlayer.currentTime + (d.seekOffset || 10));
+    });
+    // Update position state on play/resume so lock screen scrubber is accurate
+    audioPlayer.addEventListener('play', () => {
+        try {
+            if (navigator.mediaSession.setPositionState && audioPlayer.duration) {
+                navigator.mediaSession.setPositionState({ duration: audioPlayer.duration, playbackRate: 1, position: audioPlayer.currentTime });
+            }
+        } catch(e) {}
+    });
+}
+
 // ---------- CONTROLS ----------
 nextBtn.addEventListener('click', playNextTrack);
 prevBtn.addEventListener('click', playPreviousTrack);
@@ -506,9 +641,8 @@ audioPlayer.addEventListener('timeupdate', () => {
     const total = isNaN(audioPlayer.duration) ? 0 : audioPlayer.duration;
     progressBar.style.width = ((current/total)*100||0) + '%';
     timeDisplay.textContent = `${formatTime(current)} / ${formatTime(total)}`;
-    if ('mediaSession' in navigator && navigator.mediaSession.setPositionState) {
-        try { navigator.mediaSession.setPositionState({ duration: total, playbackRate: 1, position: current }); } catch(e) {}
-    }
+    // Position state updated on loadedmetadata and play events instead of timeupdate
+    // to avoid unnecessary calls when screen is off
 });
 
 // ---------- IOS ----------
