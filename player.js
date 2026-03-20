@@ -415,9 +415,13 @@ function playTrack(index, fromHistory = false) {
     if (!tracks.length || index == null || index < 0 || index >= tracks.length) return;
     currentTrack = index;
     const track = tracks[index];
+    // Clear preload state so new preload triggers correctly for new track
+    preloadedUrl = '';
+    preloadingInProgress = false;
     audioPlayer.src = encodeTrackUrl(track.url);
     audioPlayer.currentTime = 0;
     audioPlayer.load();
+    startKeepAlive(); // ensure keepalive is running before we play
     audioPlayer.play().catch(err => console.warn('Play failed:', err.name, err.message));
     if (!fromHistory) {
         if (historyPointer < history.length - 1) history = history.slice(0, historyPointer + 1);
@@ -493,19 +497,128 @@ audioPlayer.addEventListener('ended', () => {
 
 // ---------- BACKGROUND PLAYBACK ROBUSTNESS ----------
 
-// 1. Stall / buffer wait recovery — Android throttles network when screen off
+// ============================================================
+// THE CORE FIX: Silent Web Audio keepalive loop
+//
+// Android Chrome only keeps a page alive in the background if
+// audio is ACTIVELY playing. When a track ends, there's a gap
+// with no audio — Android sees this, throttles JS, and the next
+// track never loads. Fix: run a silent zero-volume audio loop
+// via Web Audio API at ALL times once the user hits play.
+// This tells Android "audio is playing" forever, so JS never
+// gets throttled between tracks.
+// ============================================================
+let keepAliveCtx = null;
+let keepAliveStarted = false;
+
+function startKeepAlive() {
+    if (keepAliveStarted) return;
+    try {
+        keepAliveCtx = new (window.AudioContext || window.webkitAudioContext)();
+        // 1-second silent buffer (all zeros = no sound)
+        const buffer = keepAliveCtx.createBuffer(1, keepAliveCtx.sampleRate, keepAliveCtx.sampleRate);
+        // Route through a GainNode at 0 so absolutely nothing is heard
+        const gainNode = keepAliveCtx.createGain();
+        gainNode.gain.value = 0;
+        gainNode.connect(keepAliveCtx.destination);
+
+        function loopSilence() {
+            if (!keepAliveCtx) return;
+            const source = keepAliveCtx.createBufferSource();
+            source.buffer = buffer;
+            source.connect(gainNode);
+            source.onended = loopSilence; // immediately restart when done
+            source.start(0);
+        }
+        loopSilence();
+        keepAliveStarted = true;
+        console.log('[MKWR] Silent keepalive started — Android will not throttle JS between tracks');
+    } catch(e) {
+        console.warn('[MKWR] Keepalive init failed (will still try to play):', e);
+    }
+}
+
+// Resume AudioContext if Android suspends it (can happen on very aggressive power saving)
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && keepAliveCtx && keepAliveCtx.state === 'suspended') {
+        keepAliveCtx.resume().catch(e => console.warn('[MKWR] AudioContext resume failed:', e));
+    }
+});
+
+// ============================================================
+// NEXT TRACK PRELOADING
+//
+// Load the next track into a hidden audio element while the
+// current track is still playing (20s before it ends).
+// This eliminates the network delay at track boundaries —
+// by the time the current track ends the next one is buffered.
+// ============================================================
+let preloadAudio = new Audio();
+preloadAudio.preload = 'auto';
+let preloadedUrl = '';
+let preloadingInProgress = false;
+
+function getNextTrackIndex() {
+    if (!tracks.length) return null;
+    if (loopMode === 'one') return currentTrack;
+    if (historyPointer < history.length - 1) return history[historyPointer + 1];
+    if (playInOrder) {
+        let nextIndex = currentTrack + 1;
+        while (nextIndex < tracks.length && excludedTracks.has(tracks[nextIndex] && tracks[nextIndex].url)) nextIndex++;
+        if (nextIndex >= tracks.length) return loopMode === 'all' ? 0 : null;
+        return nextIndex;
+    } else {
+        // Peek at the next shuffle item without consuming it
+        if (shufflePool.length > 0) return shufflePool[0];
+        // Pool is empty — would be rebuilt; just peek at a random remaining track
+        const available = tracks.map((_, i) => i).filter(i => i !== currentTrack);
+        return available.length ? available[Math.floor(Math.random() * available.length)] : null;
+    }
+}
+
+function preloadNextTrack() {
+    if (preloadingInProgress) return;
+    const nextIndex = getNextTrackIndex();
+    if (nextIndex == null) return;
+    const nextTrack = tracks[nextIndex];
+    if (!nextTrack) return;
+    const url = encodeTrackUrl(nextTrack.url);
+    if (url === preloadedUrl) return; // already preloaded
+    preloadingInProgress = true;
+    preloadedUrl = url;
+    preloadAudio.src = url;
+    preloadAudio.load();
+    preloadAudio.addEventListener('canplaythrough', () => {
+        preloadingInProgress = false;
+        console.log('[MKWR] Preloaded:', nextTrack.title);
+    }, { once: true });
+    preloadAudio.addEventListener('error', () => {
+        preloadingInProgress = false;
+        preloadedUrl = '';
+    }, { once: true });
+}
+
+// Trigger preload when 20 seconds remain
+audioPlayer.addEventListener('timeupdate', () => {
+    if (!audioPlayer.duration || audioPlayer.duration === Infinity) return;
+    const remaining = audioPlayer.duration - audioPlayer.currentTime;
+    if (remaining < 20 && remaining > 0) preloadNextTrack();
+});
+
+// ============================================================
+// STALL / ERROR RECOVERY
+// ============================================================
 let stallTimer = null;
 function clearStallTimer() { if (stallTimer) { clearTimeout(stallTimer); stallTimer = null; } }
 
 audioPlayer.addEventListener('waiting', () => {
     clearStallTimer();
     stallTimer = setTimeout(() => {
-        // After 8s of buffering stall, try to seek slightly forward and resume
         if (!audioPlayer.paused && audioPlayer.readyState < 3) {
-            console.warn('[MKWR] Audio stalled, attempting recovery...');
+            console.warn('[MKWR] Audio stalled on waiting, nudging forward...');
             const ct = audioPlayer.currentTime;
             audioPlayer.currentTime = ct + 0.1;
-            audioPlayer.play().catch(e => console.warn('[MKWR] Stall recovery play failed:', e));
+            audioPlayer.play().catch(e => console.warn('[MKWR] Stall nudge failed:', e));
         }
     }, 8000);
 });
@@ -514,11 +627,11 @@ audioPlayer.addEventListener('stalled', () => {
     clearStallTimer();
     stallTimer = setTimeout(() => {
         if (!audioPlayer.paused) {
-            console.warn('[MKWR] Audio stalled (stalled event), attempting recovery...');
+            console.warn('[MKWR] Audio stalled (stalled event), reloading src...');
             const ct = audioPlayer.currentTime;
             audioPlayer.load();
             audioPlayer.currentTime = ct;
-            audioPlayer.play().catch(e => console.warn('[MKWR] Stall load recovery failed:', e));
+            audioPlayer.play().catch(e => console.warn('[MKWR] Stall reload failed:', e));
         }
     }, 10000);
 });
@@ -526,73 +639,85 @@ audioPlayer.addEventListener('stalled', () => {
 audioPlayer.addEventListener('playing', clearStallTimer);
 audioPlayer.addEventListener('ended', clearStallTimer);
 
-// 2. Error handler — skip to next track on unrecoverable audio error
+// Error → skip to next after short delay
 audioPlayer.addEventListener('error', (e) => {
     const err = audioPlayer.error;
     console.warn('[MKWR] Audio error:', err ? err.code + ' ' + err.message : e);
     clearStallTimer();
-    // Don't skip if no track loaded yet
     if (!audioPlayer.src || !tracks.length) return;
     setTimeout(() => playNextTrack(), 1500);
 });
 
-// 3. Heartbeat — catches missed 'ended' events when screen is off (Android throttles JS)
+// ============================================================
+// HEARTBEAT — backup for missed 'ended' events
+// The keepalive keeps JS alive, but this is a final safety net.
+// Uses 1s interval (not 3s) since JS is kept alive by keepalive.
+// ============================================================
 let lastHeartbeatTime = -1;
 let heartbeatSkipGuard = false;
+
 setInterval(() => {
     if (audioPlayer.paused || !audioPlayer.duration || audioPlayer.duration === Infinity) return;
     const remaining = audioPlayer.duration - audioPlayer.currentTime;
-    // Track has ended but ended event didn't fire
+
+    // Missed ended event
     if (audioPlayer.ended && !heartbeatSkipGuard) {
         heartbeatSkipGuard = true;
-        console.warn('[MKWR] Heartbeat caught missed ended event');
+        console.warn('[MKWR] Heartbeat: missed ended event, skipping');
         if (loopMode === 'one') { audioPlayer.currentTime = 0; audioPlayer.play(); }
         else playNextTrack();
         setTimeout(() => { heartbeatSkipGuard = false; }, 3000);
         return;
     }
-    // currentTime frozen — audio silently stalled
-    if (audioPlayer.currentTime === lastHeartbeatTime && audioPlayer.readyState < 3 && remaining > 2) {
+
+    // currentTime frozen while should be playing
+    if (audioPlayer.currentTime === lastHeartbeatTime && audioPlayer.readyState < 3 && remaining > 2 && !audioPlayer.paused) {
         console.warn('[MKWR] Heartbeat: currentTime frozen, attempting recovery');
         audioPlayer.play().catch(e => {});
     }
+
     lastHeartbeatTime = audioPlayer.currentTime;
     heartbeatSkipGuard = false;
-}, 3000);
+}, 1000);
 
-// 4. Visibility change — recover when user unlocks screen
+// ============================================================
+// VISIBILITY CHANGE — screen unlock recovery
+// ============================================================
 document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
-    console.log('[MKWR] Page visible again, checking audio state...');
 
-    // Short delay to let the browser fully resume from background
+    // Resume keepalive context if suspended
+    if (keepAliveCtx && keepAliveCtx.state === 'suspended') {
+        keepAliveCtx.resume().catch(e => {});
+    }
+
     setTimeout(() => {
         if (!tracks.length || currentTrack == null) return;
 
-        // Case A: audio ended while screen was off
+        // Track ended while screen was off
         if (audioPlayer.ended) {
-            console.log('[MKWR] Audio ended while in background, playing next');
+            console.log('[MKWR] Visibility: track ended in background, playing next');
             if (loopMode === 'one') { audioPlayer.currentTime = 0; audioPlayer.play(); }
             else playNextTrack();
             return;
         }
 
-        // Case B: audio should be playing but is paused (Android killed it)
-        if (audioPlayer.paused && audioPlayer.currentTime > 0 && audioPlayer.currentTime < audioPlayer.duration) {
-            console.log('[MKWR] Audio was playing but paused by system, resuming');
+        // Android killed the audio (paused it)
+        if (audioPlayer.paused && audioPlayer.currentTime > 0 && audioPlayer.currentTime < (audioPlayer.duration || Infinity)) {
+            console.log('[MKWR] Visibility: audio paused by system, resuming');
             audioPlayer.play().catch(e => console.warn('[MKWR] Resume failed:', e));
             return;
         }
 
-        // Case C: audio stalled / low readyState while should be playing
+        // Stalled in background
         if (!audioPlayer.paused && audioPlayer.readyState < 2) {
-            console.log('[MKWR] Audio stalled in background, reloading');
+            console.log('[MKWR] Visibility: audio stalled in background, reloading');
             const ct = audioPlayer.currentTime;
             audioPlayer.load();
             if (ct > 0) { try { audioPlayer.currentTime = ct; } catch(e) {} }
             audioPlayer.play().catch(e => console.warn('[MKWR] Stall resume failed:', e));
         }
-    }, 500);
+    }, 300);
 });
 
 // 5. MediaSession — register action handlers ONCE at init (not per-track)
